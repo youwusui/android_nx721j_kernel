@@ -1,0 +1,92 @@
+name: Z60U pinned 6.1.90 SUSFS candidate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/nx721j-susfs-build]
+    paths:
+      - .github/workflows/z60u-susfs.yml
+      - .ci/z60u/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: z60u-susfs-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out build instructions only
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          sparse-checkout: |
+            .ci/z60u
+          persist-credentials: false
+
+      - name: Prepare runner and record capacity
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/audit"
+          df -h | tee audit/disk-before.txt
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          sudo apt-get update -qq
+          sudo apt-get install -y bc bison build-essential cpio flex libelf-dev libssl-dev lz4 zstd rsync
+          df -h | tee audit/disk-ready.txt
+          free_kb=$(df --output=avail -k . | tail -n 1)
+          if (( free_kb < 30 * 1024 * 1024 )); then
+            echo 'Less than 30 GiB available after cleanup; do not risk an incomplete build.' >&2
+            exit 1
+          fi
+
+      - name: Sync exact Android build 12424481
+        run: bash .ci/z60u/sync.sh "$GITHUB_WORKSPACE/android-kernel" "$GITHUB_WORKSPACE/audit"
+
+      - name: Apply pinned KernelSU and SUSFS patches
+        run: bash .ci/z60u/integrate.sh "$GITHUB_WORKSPACE/android-kernel" "$GITHUB_WORKSPACE/audit"
+
+      - name: Build candidate and enforce official ABI comparison
+        run: |
+          set -euo pipefail
+          cd android-kernel
+          tools/bazel run --lto=none --jobs=4 //common:kernel_aarch64_abi_dist \
+            -- --dist_dir="$GITHUB_WORKSPACE/dist" 2>&1 | tee "$GITHUB_WORKSPACE/audit/build.log"
+
+      - name: Verify Image, configuration, KMI and stock symbol CRCs
+        run: |
+          set -euo pipefail
+          python3 .ci/z60u/verify_artifacts.py \
+            --dist "$GITHUB_WORKSPACE/dist" \
+            --stock-symvers .ci/z60u/stock-vmlinux.symvers \
+            --running-config .ci/z60u/stock.config \
+            --required-config audit/required-config.txt
+          find dist -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > audit/artifact-sha256.txt
+
+      - name: Save candidate for device compatibility review
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: z60u-6.1.90-susfs-candidate-${{ github.run_number }}
+          path: dist/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+
+      - name: Save build diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: z60u-build-audit-${{ github.run_number }}
+          path: |
+            audit/
+            dist/verification.json
+          if-no-files-found: warn
+          retention-days: 14
