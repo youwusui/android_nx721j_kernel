@@ -1,0 +1,147 @@
+name: Build Nubia Z60 Ultra Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernelsu_tag:
+        description: 'KernelSU 管理器 (1=KernelSU 2=KernelSU-Next 3=SukiSU 4=ReSukiSU)'
+        required: true
+        default: '2'
+        type: choice
+        options: ['1', '2', '3', '4','No KernelSU']
+      susfs:
+        description: '启用 susfs4ksu (y/n)'
+        required: true
+        default: 'y'
+        type: choice
+        options: ['y', 'n']
+      netfilter:
+        description: 'Netfilter/IPSET (y/n)'
+        required: true
+        default: 'y'
+        type: choice
+        options: ['y', 'n']
+      bbr:
+        description: 'BBR 拥塞控制 (y/n)'
+        required: true
+        default: 'y'
+        type: choice
+        options: ['y', 'n']
+      mountify:
+        description: 'Mountify 支持 (y/n)'
+        required: true
+        default: 'y'
+        type: choice
+        options: ['y', 'n']
+      droidspaces:
+        description: 'Droidspaces 支持 (y/n)'
+        required: true
+        default: 'y'
+        type: choice
+        options: ['y', 'n']
+      ssg:
+        description: 'SSG IO 调度 (y/n)'
+        required: true
+        default: 'n'
+        type: choice
+        options: ['y', 'n']
+      bbg:
+        description: 'BBG 基带守护 (y/n)'
+        required: true
+        default: 'n'
+        type: choice
+        options: ['y', 'n']
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - '**/*.md'
+      - '.github/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Kernel
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout 内核源码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # 核心修复：使用符号链接，而不是移动目录
+      # 这样既满足 build.sh 的路径要求，又保留默认工作目录
+      - name: 将源码链接到脚本期望的位置
+        run: |
+          mkdir -p $HOME/android_kernel
+          ln -sfn "$GITHUB_WORKSPACE" $HOME/android_kernel/android_nx721j_kernel
+          echo "链接完成，检查内容："
+          ls -la $HOME/android_kernel/android_nx721j_kernel/ | head -n 5
+          cd $HOME/android_kernel/android_nx721j_kernel
+          git log -1 --oneline
+
+      - name: 释放磁盘空间
+        run: |
+          echo "=== Before ==="; df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+                      "$AGENT_TOOLSDIRECTORY" || true
+          sudo apt-get clean
+          echo "=== After ==="; df -h /
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache cpio curl flex git \
+            device-tree-compiler kmod libelf-dev libssl-dev \
+            patch python3 rsync unzip wget zip dwarves
+
+      - name: 环境信息
+        run: |
+          echo "HOME=$HOME"
+          nproc --all
+          free -h
+          df -h
+          which dtc && dtc --version || true
+
+      - name: 编译内核
+        env:
+          KERNELSU_TAG_IN: ${{ inputs.kernelsu_tag || '3' }}
+          SUSFS_IN:        ${{ inputs.susfs        || 'y' }}
+          NET_IN:          ${{ inputs.netfilter    || 'y' }}
+          BBR_IN:          ${{ inputs.bbr          || 'y' }}
+          MFY_IN:          ${{ inputs.mountify     || 'y' }}
+          DS_IN:           ${{ inputs.droidspaces  || 'y' }}
+          SSG_IN:          ${{ inputs.ssg          || 'y' }}
+          BBG_IN:          ${{ inputs.bbg          || 'y' }}
+        run: |
+          cd $HOME/android_kernel/android_nx721j_kernel
+          chmod +x build.sh
+          # 按 build.sh 里 read -p 出现的顺序依次喂入答案
+          printf '%s\n' \
+            "${KERNELSU_TAG_IN}" \
+            "${SUSFS_IN}" \
+            "${NET_IN}" \
+            "${BBR_IN}" \
+            "${MFY_IN}" \
+            "${DS_IN}" \
+            "${SSG_IN}" \
+            "${BBG_IN}" \
+          | bash build.sh
+
+      - name: 列出产物
+        if: always()
+        run: |
+          ls -lh $HOME/android_kernel/nx721j_out/ 2>/dev/null || echo "无输出目录"
+
+      - name: 上传 AnyKernel3 刷机包
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyKernel3-run${{ github.run_number }}
+          path: /home/runner/android_kernel/nx721j_out/*.zip
+          if-no-files-found: error
+          retention-days: 30
