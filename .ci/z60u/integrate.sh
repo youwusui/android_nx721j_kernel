@@ -66,6 +66,15 @@ cp "$STAGE/susfs4ksu/kernel_patches/include/linux/susfs_def.h" "$COMMON/include/
 # Backport upstream e9983b93254111f2b74391435a6fe3824c26fd8a's missing header.
 apply_checked "$COMMON" "$SCRIPT_DIR/patches/0002-susfs-old-gki-security-header.patch"
 
+# Stock system_dlkm modules are signed by the certificate embedded in the
+# original ab12424481 kernel. Trust that public certificate in addition to the
+# new build's own module key; do not disable GKI protected-symbol enforcement.
+# A Kconfig default keeps the canonical gki_defconfig/check_defconfig intact.
+python3 "$SCRIPT_DIR/module_trust.py" --certificate "$SCRIPT_DIR/stock-gki.pem"
+[[ ! -e "$COMMON/certs/z60u-stock-gki.pem" ]]
+cp "$SCRIPT_DIR/stock-gki.pem" "$COMMON/certs/z60u-stock-gki.pem"
+apply_checked "$COMMON" "$SCRIPT_DIR/patches/0004-stock-gki-module-trust.patch"
+
 # Use ordinary source files within the common Bazel package. Do not rely on
 # a symlink reaching outside the package or on Git/network inside the sandbox.
 mkdir "$COMMON/drivers/kernelsu"
@@ -116,6 +125,12 @@ CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
 CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
 CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
 CONFIG_KSU_SUSFS_SUS_MAP=y
+CONFIG_MODULE_SIG=y
+CONFIG_MODULE_SIG_PROTECT=y
+# CONFIG_MODULE_SIG_FORCE is not set
+CONFIG_MODULE_SIG_KEY="certs/signing_key.pem"
+CONFIG_SYSTEM_TRUSTED_KEYRING=y
+CONFIG_SYSTEM_TRUSTED_KEYS="certs/z60u-stock-gki.pem"
 EOF
 
 if find "$COMMON" "$STAGE/KernelSU" -name '*.rej' -print -quit | grep -q .; then
@@ -146,6 +161,14 @@ lock = {
     "kernel_release_modified": False,
     "abi_check_disabled": False,
     "init_boot_modified": False,
+    "stock_module_trust": {
+        "certificate_der_sha256": "33300657d6627381fd3fd53c6348a984685075f5d80901ef71ebbffc8ea1c4aa",
+        "certificate_pem_sha256": hashlib.sha256((scripts / "stock-gki.pem").read_bytes()).hexdigest(),
+        "destination": "certs/z60u-stock-gki.pem",
+        "mechanism": "CONFIG_SYSTEM_TRUSTED_KEYS; additional built-in public certificate",
+        "module_sig_protect_disabled": False,
+        "private_key_imported": False,
+    },
 }
 (audit / "dependencies.lock.json").write_text(json.dumps(lock, indent=2) + "\n")
 PY

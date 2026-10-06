@@ -19,6 +19,8 @@ import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from module_trust import verify_builtin_trust
+
 
 EXPECTED_RELEASE = re.compile(r"6\.1\.90-android14-11(?:-[A-Za-z0-9_.+]+)*")
 EXPECTED_STOCK_SYMBOLS = 7782
@@ -32,6 +34,12 @@ REQUIRED_CONFIG = {
     "CONFIG_ARM64": "y",
     "CONFIG_ARM64_4K_PAGES": "y",
     "CONFIG_MODULES": "y",
+    "CONFIG_MODULE_SIG": "y",
+    "CONFIG_MODULE_SIG_PROTECT": "y",
+    "CONFIG_MODULE_SIG_FORCE": "n",
+    "CONFIG_MODULE_SIG_KEY": '"certs/signing_key.pem"',
+    "CONFIG_SYSTEM_TRUSTED_KEYRING": "y",
+    "CONFIG_SYSTEM_TRUSTED_KEYS": '"certs/z60u-stock-gki.pem"',
 }
 
 
@@ -90,7 +98,7 @@ def compare_config(candidate, running):
         actual = candidate.get(key, "n")
         if actual != expected:
             errors.append(f"{key}: expected {expected}, got {actual}")
-        if key not in ("CONFIG_KSU", "CONFIG_KSU_SUSFS"):
+        if key not in ("CONFIG_KSU", "CONFIG_KSU_SUSFS", "CONFIG_SYSTEM_TRUSTED_KEYS"):
             stock_value = running.get(key, "n")
             if stock_value != expected:
                 errors.append(f"running configuration {key}: expected {expected}, got {stock_value}")
@@ -210,6 +218,7 @@ def verify(dist, stock_path, running_path, required_path=None):
     run_check("kernel_release", lambda: check_release(read_text(dist / "gki-info.txt")))
     run_check("config", config_check)
     run_check("symbols", symbols_check)
+    run_check("module_trust", lambda: verify_builtin_trust(dist / "vmlinux"))
     if not summary["errors"]:
         summary["status"] = "passed"
     return summary
