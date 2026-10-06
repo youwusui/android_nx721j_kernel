@@ -69,12 +69,27 @@ apply_checked "$COMMON" "$SCRIPT_DIR/patches/0002-susfs-old-gki-security-header.
 # Use ordinary source files within the common Bazel package. Do not rely on
 # a symlink reaching outside the package or on Git/network inside the sandbox.
 mkdir "$COMMON/drivers/kernelsu"
-cp -a "$STAGE/KernelSU/kernel/." "$COMMON/drivers/kernelsu/"
+cp -aL "$STAGE/KernelSU/kernel/." "$COMMON/drivers/kernelsu/"
+test -s "$COMMON/drivers/kernelsu/include/uapi/app_profile.h"
+if find -L "$COMMON/drivers/kernelsu" -type l -print -quit | grep -q .; then
+  echo "KernelSU contains a dangling source symlink; stopping before compilation." >&2
+  exit 1
+fi
 python3 - "$COMMON" <<'PY'
 import pathlib
+import re
 import sys
 
 common = pathlib.Path(sys.argv[1])
+ksu = common / "drivers/kernelsu"
+uapi_headers = set()
+for source in ksu.rglob("*"):
+    if source.suffix in (".c", ".h"):
+        uapi_headers.update(re.findall(r'^\s*#\s*include\s+"(uapi/[^\"]+)"', source.read_text(), re.M))
+assert uapi_headers, "No KernelSU UAPI includes discovered"
+missing = [header for header in sorted(uapi_headers) if not (ksu / "include" / header).is_file()]
+assert not missing, f"Missing KernelSU UAPI headers: {missing}"
+print(f"Verified {len(uapi_headers)} KernelSU UAPI header dependencies before compilation")
 makefile = common / "drivers/Makefile"
 kconfig = common / "drivers/Kconfig"
 make_text = makefile.read_text()
