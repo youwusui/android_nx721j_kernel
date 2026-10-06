@@ -21,7 +21,24 @@ git config --global user.email 'kernel-build@users.noreply.github.com'
 cd "$kernel_root"
 repo init -u https://android.googlesource.com/kernel/manifest \
   -b common-android14-6.1-2024-08 --depth=1 --no-clone-bundle
-cp "$script_dir/manifest_12424481.xml" .repo/manifests/manifest_12424481.xml
+# The 2024 manifest's branch hints have since been removed upstream. Keep every
+# project SHA intact, but fetch those commits instead of nonexistent branches.
+python3 - "$script_dir/manifest_12424481.xml" .repo/manifests/manifest_12424481.xml <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+tree = ET.parse(sys.argv[1])
+root = tree.getroot()
+for project in root.findall("project"):
+    assert len(project.attrib["revision"]) == 40
+    project.attrib.pop("upstream", None)
+    project.attrib.pop("dest-branch", None)
+    project.set("clone-depth", "1")
+for superproject in root.findall("superproject"):
+    root.remove(superproject)
+tree.write(sys.argv[2], encoding="UTF-8", xml_declaration=True)
+PY
+cp .repo/manifests/manifest_12424481.xml "$audit_dir/effective-manifest.xml"
 repo init -m manifest_12424481.xml --depth=1 --no-clone-bundle
 repo sync -c -j4 --no-clone-bundle --no-tags --fail-fast 2>&1 | tee "$audit_dir/repo-sync.log"
 
